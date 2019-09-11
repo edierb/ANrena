@@ -1,74 +1,41 @@
 function DataAccess() {
-    var storageExists = false;
     var apiSource = "https://netrunnerdb.com/api/2.0/public/cards";
     var packsApiSource = "https://netrunnerdb.com/api/2.0/public/packs";
-    try {
-        var storage = window["localStorage"];
-        x = '__storage_test__';
-        storage.setItem(x, x);
-        storage.removeItem(x);
-        storageExists = true;
-    } catch (e) {
-        storageExists = false;
-    }
-    this.notUpToDate = function (cardDB) {
-        return true;
-    };
+    var prebuiltsApiSource = "https://netrunnerdb.com/api/2.0/public/prebuilts";
     this.LoadCards = function (that, callback) {
-        if (!storageExists) {
-            that.requestFromNRDB(callback);
-            return;
-        } else {
-            var cardDB = storage.getItem("cards");
-            if (that.notUpToDate(cardDB)) {
-                that.requestFromNRDB(callback);
-                return;
-            }
-            callback.apply(Document, cardDB);
-        }
-        ;
-    };
-    this.LoadPacks = function (that, callback) {
-        if (!storageExists) {
-            that.requestPacksFromNRDB(callback);
-            return;
-        } else {
-            var packDB = storage.getItem("packs");
-            if (that.notUpToDate(packDB)) {
-                that.requestPacksFromNRDB(callback);
-                return;
-            }
-            callback.apply(Document, packDB);
-        }
-        ;
-    };
-    this.requestFromNRDB = function (callback) {
         $.getJSON(apiSource, callback);
     };
-    this.requestPacksFromNRDB = function (callback) {
+    this.LoadPacks = function (that, callback) {
         $.getJSON(packsApiSource, callback);
+    };
+    this.LoadPrebuilts = function (that, callback) {
+        $.getJSON(prebuiltsApiSource, callback);
     };
 }
 
-var myCardCollection = []; // Instance of CardCollection contains all card information and generates draft picks from the available cards.
-var myArenaScript = {}; // Instance of Script contains and handles the draft pick logic
-var myDeckList = {}; // Instance of deckList contains and handles all picked card information
+var myCardCollection = null; // Instance of CardCollection contains all card information and generates draft picks from the available cards
+var myArenaScript = null; // Instance of Script contains and handles the draft pick logic
+var myDeckList = null; // Instance of deckList contains and handles all picked card information
 var dataAccess = new DataAccess();
-var preferences = {//Global settings
-    "deckSize": 45, // To be used with drafting ID
-    "setFilter": "released", // default card filter can be "" for all packs "released" for released packs or an array of pack codes
+var preferences = { //Global settings
+    "deckSize": 30, // to be used with drafting ID
+    "setFilter": "collection", // default card filter can be "" for all packs, "released" for released packs, "collection" for cards only in your collection or an array of pack codes
+    "collection": ["core2", "td", "hap", "oac", "qu", "ss", "dtwn", "cotc", "2016-world-champion-runner-deck" ], // the list of packs in your collection
     "econPicks": 9, // minimum econ picks
     "corePicks": 4, // minimun core set picks
-    "limitOne": true, // if set to true all 1ofs will be removed from the pool once one of them has been selected.
-    "limitAll": false, // if set to true all card will be removed from the pool once they reach their default deck limit.
-    "softLimit": true, // if set to true cards will become increasingly rare each time they are picked after they reach their default deck limit,
-    "consoleSoftLimit": true, // if set to true after selecting a console all others will become more rare, and it more common
-    "weightCode": "influence-weights-faction-bonus", // currectly selected weighta algorithm to allow for different weight systems.
-    "pickOptions": 4, //number of cards to pick from on selection screen
-    "draftBlockedCards": ["09053", "06025", "10073", "10083"], //list of card codes to be banned with draft ids (Rebirth, Cerebral Static, Employe Strike and Indian 
-    "releasedSets": [] // list of currectly released datapacks automatically populated
+    "limitOne": true, // if set to true, all 1ofs will be removed from the pool once one of them has been selected
+    "limitAll": true, // if set to true, all card will be removed from the pool once they reach their default deck limit
+    "softLimit": false, // if set to true, cards will become increasingly rare each time they are picked after they reach their default deck limit
+    "consoleSoftLimit": true, // if set to true, after selecting a console all others will become more rare, and it more common
+    "weightCode": "influence-weights-faction-bonus", // currently selected weight algorithm to allow for different weight systems
+    "pickOptions": 4, // number of cards to pick from on selection screen
+    "draftBlockedCards": ["06025", "09053", "10073", "10083"] // list of card codes to be banned with draft ids (Cerebral Static, Employee Strike, Indian Union Stock Exchange and Rebirth)
 };
+var releasedSets = []; // list of currently released data packs (automatically populated from NetrunnerDB)
 var imageURLTemplate = "";
+
+// This is a list of cards that should be removed from the card pool after it is initialized.
+const cardsToBeRemoved = [];
 
 function CardCollection(data, setFilter) {
     /*
@@ -86,10 +53,13 @@ function CardCollection(data, setFilter) {
     var allowedSets = [];
     if (setFilter instanceof Array) {
         allowedSets = setFilter;
-    } else {
-        if (setFilter === "released") {
-            allowedSets = preferences.releasedSets;
-        }
+    } else if (setFilter === "released") {
+        allowedSets = releasedSets;
+    } else if (setFilter === "collection") {
+        allowedSets = preferences.collection;
+        $.each(data, function (key, value) {
+            value.remaining = value["quantity"] * preferences.collection.filter(pack_code => pack_code === value["pack_code"]).length;
+        });
     }
 
     $.each(data, function (key, value) {
@@ -108,8 +78,10 @@ function CardCollection(data, setFilter) {
                     case "agenda":
                         if (value["agenda_points"] > 0) {
                             cardSets.agendas.push(value);
-                            break;
+                        } else {
+                            cardSets.corp.push(value);
                         }
+                        break;
                     default:
                         if (value["side_code"] === "corp") {
                             cardSets.corp.push(value);
@@ -196,12 +168,27 @@ function CardCollection(data, setFilter) {
     this.getCard = function (cardPoolCode, cardCode) {
         return filterFunctions.getCard(filterFunctions.getCardPool(cardSets, cardPoolCode), cardCode);
     };
+    this.removeCopyFromCollection = function (cardPoolCode, cardCode) {
+        let card = this.getCard(cardPoolCode, cardCode);
+        card.remaining--;
+        if (card.remaining === 0) {
+            myArenaScript.blockCard(cardCode);
+        }
+    };
+    this.removeCopyFromSomewhereInCollection = function (cardCode) {
+        const cardPoolCodes = [ "runner", "corp", "runner-id", "corp-id", "agendas", "draft-id" ];
+        for (const cardPoolCode of cardPoolCodes) {
+            const card = this.getCard(cardPoolCode, cardCode);
+            if (card !== null) {
+                this.removeCopyFromCollection(cardPoolCode, cardCode);
+            }
+        }
+    };
     this.blockJintekiCards = function () {
-        $.each(cardSets.corp, function (key, value) {
+        $.each(cardSets.corp.concat(cardSets.agendas), function (key, value) {
             if (value.faction_code === "jinteki") {
                 myArenaScript.blockCard(value.code);
             }
-
         });
     };
     this.setProfessorAlliances = function () {
@@ -209,7 +196,6 @@ function CardCollection(data, setFilter) {
             if (filterFunctions.checkFilter(value, "program") && (value.faction_code !== "shaper" || value.faction_code !== "neutral")) {
                 myDeckList.setAlliance(value.code);
             }
-
         });
     };
 }
@@ -235,19 +221,15 @@ var views = {
         $("#Arena").html(html);
     },
     startDraft: function (sideCode, formatCode) {
-        this.loadPreferences();
         myArenaScript = new Script(sideCode, formatCode);
         dataAccess.LoadPacks(dataAccess, onPacksDataAvaliable);
         console.log("document loaded");
-    },
-    loadPreferences: function () {
-
     },
     publishChoice: function (picks, cardPoolCode) {
         currentPicks = picks;
         var selected = [];
         $.each(picks, function (key, value) {
-            selected.push("<a href=\"javascript:views.picked('" + value.code + "','" + cardPoolCode + "')\"><img class='pickImg' src='" + imageURLTemplate.replace("{code}", value.code) + "' alt='" + value.title + "'></a>");
+            selected.push("<a href=\"javascript:views.picked('" + value.code + "','" + cardPoolCode + "')\"><img class='pickImg' src='" + cardImageURL(value) + "' alt='" + value.title + "'></a>");
         });
         $("#Arena").html(selected.join(""));
     },
@@ -261,12 +243,14 @@ var views = {
                 } else if (pickedCard.code === "03029") {
                     myDeckList.setProfessorRules();
                 }
-
             }
         } else if (pickedCard.type_code === "agenda") {
             myArenaScript.pickedAgendaPoints(pickedCard.agenda_points);
         }
         myDeckList.push(pickedCard);
+        if (preferences.setFilter === "collection") {
+            myCardCollection.removeCopyFromCollection(cardPoolCode, code);
+        }
         if (pickedCard.type_code === "identity") {
             if ((pickedCard.influence_limit === null && ['00006', '00005'].includes(pickedCard.code)) || (pickedCard.influence_limit !== null)) {
                 myArenaScript.schedulePicks();
@@ -287,7 +271,7 @@ var views = {
         $(".card").mouseenter(function (event) {
             event.stopPropagation();
             var position = $(this).offset();
-            $("#cardPopup").css("background-image", "url(" + imageURLTemplate.replace("{code}", $(this).data('cardcode')) + " )");
+            $("#cardPopup").css("background-image", "url(" + $(this).data('card_image_url') + " )");
             $("#cardPopup").css("top", (position.top));
             $("#cardPopup").css("left", position.left + $(this).width());
             $("#cardPopup").show();
@@ -302,14 +286,28 @@ var views = {
             case "decklist":
                 myDeckList.print();
                 break;
-            case "updates":
-                $("#DeckList").load("_textPages/updates.html");
-                break;
             case "about":
                 $("#DeckList").load("_textPages/about.html");
                 break;
             default:
                 $("#DeckList").load("_textPages/home-page.html");
+                dataAccess.LoadPacks(dataAccess, function (packsData) {
+                    dataAccess.LoadPrebuilts(dataAccess, function (prebuiltsData) {
+                        var names = [];
+                        for (var code of preferences.collection) {
+                            var packs = packsData.data.concat(prebuiltsData.data);
+
+                            var pack = packs.find(p => p.code === code);
+                            if (pack !== undefined) {
+                                names.push(pack.name);
+                            }
+                        }
+
+                        var list = $("<ul>").append(names.map(n => $("<li>").text(n)));
+
+                        $("#AllowedPacks").empty().append("Allowed packs:", list);
+                    });
+                });
                 break;
 
         }
@@ -373,14 +371,14 @@ function deckList(targetDiv) {
     this.print = function () {
         /* 
          * Fill the deckList container
-         *  deckSize in the numbe of currently used cards while myArenaScript.deckSize() the final deck size.
+         *  deckSize in the number of currently used cards while myArenaScript.deckSize() the final deck size.
          *  maxInfluence is the influence limit for the ID, for draft Id it is set to -1.
          *  usedInfluence is the amount of used influence while this.influence() returns the available influence for the deck.
          */
         $("#DeckList").html("");
         deckListHeaderHtml = "<div  class=\"card identity ";
         if (typeof this.idCard() !== "undefined") {
-            deckListHeaderHtml += this.idCard().faction_code + "\" data-cardcode=\"" + this.idCard().code + "\" > " + this.idCard().title + " (" + deckSize + "/" + myArenaScript.deckSize() + ")";
+            deckListHeaderHtml += this.idCard().faction_code + "\" data-cardcode=\"" + this.idCard().code + "\" data-card_image_url=\"" + cardImageURL(this.idCard()) + "\" > " + this.idCard().title + " (" + deckSize + "/" + myArenaScript.deckSize() + ")";
         } else {
             deckListHeaderHtml += "\" >Deck";
         }
@@ -408,9 +406,9 @@ function deckList(targetDiv) {
                  * as well as the key count that contains the amount of times a card has been picked
                  * and the key usedInfluence that marks how much influence the copies of this card take from the deck.
                  */
-                deckListTypeHtml += "<div class=\"card\" data-cardcode=\"" + cardForPrint.code + "\">";
+                deckListTypeHtml += "<div class=\"card\" data-cardcode=\"" + cardForPrint.code + "\" data-card_image_url=\"" + cardImageURL(cardForPrint) + "\" >";
 
-                deckListTypeHtml += "<span class=\"card-count\" >" + cardForPrint["count"] + "</span>  <span class=\"card-title " + cardForPrint["faction_code"] + "\" >" + cardForPrint["title"] + "</span> ";
+                deckListTypeHtml += "<span class=\"card-count\" >" + cardForPrint["count"] + "</span>  <span class=\"card-title " + cardForPrint["faction_code"] + "\" >" + cardForPrint["title"] + "</span>  <span class=\"card-pack\" >" + cardForPrint["pack_code"] + "</span> ";
                 if (typeof cardForPrint["usedInfluence"] !== "undefined") {
                     for (i = 0; i < cardForPrint["usedInfluence"]; i++) {
                         deckListTypeHtml += "<span class=\"influence-dot\" >&#9679;</span>";
@@ -468,7 +466,6 @@ function deckList(targetDiv) {
         if (isSpecialId === "Professor" && pushedCard.type_code === "program") {
             this.removeAlliance(pushedCard.code);
         }
-        ;
         if (preferences.limitAll || (preferences.limitOne && (pushedCard.deck_limit === 1))) {
             if (MyCards[pushedCard.type_code][pushedCard.code]["count"] >= pushedCard.deck_limit) {
                 myArenaScript.blockCard(pushedCard.code);
@@ -516,23 +513,19 @@ function Script(sideCode, formatCode) {
         } else {
             blockedCodes = [];
             if (sideCode === "runner") {
-                views.publishChoice(myCardCollection.createSet("runner-id", [], preferences.pickOptions, "", [], "", -1), "runner-id");
+                views.publishChoice(myCardCollection.createSet("runner-id", [], preferences.pickOptions, "", blockedCodes, "", -1), "runner-id");
             } else {
-                views.publishChoice(myCardCollection.createSet("corp-id", [], preferences.pickOptions, "", [], "", -1), "corp-id");
+                views.publishChoice(myCardCollection.createSet("corp-id", [], preferences.pickOptions, "", blockedCodes, "", -1), "corp-id");
             }
 
         }
     };
     this.blockCard = function (code) {
-
         blockedCodes.push(code);
     };
     this.setDeckSize = function (num) {
         deckS = num;
         schedule.setSize(this.deckSize());
-    };
-    this.deckSize = function () {
-        return schedule.deckSize();
     };
     this.pickedAgendaPoints = function (value) {
         killedAgendaPicks = value - 1;
@@ -768,7 +761,7 @@ var filterFunctions = {
     checkFilter: function (card, filter, agendaPoints) {
         switch (filter) {
             case "core":
-                if (card["pack_code"] === "core") {
+                if (card["pack_code"] === "core" || card["pack_code"] === "core2") {
                     return true;
                 }
                 return false;
@@ -830,23 +823,131 @@ var filterFunctions = {
     }
 };
 var onPacksDataAvaliable = function (data) {
-    preferences.releasedSets = [];
+    releasedSets = [];
     $.each(data.data, function (key, value) {
         if (value.date_release !== null) {
             if (new Date(value.date_release).getTime() <= new Date()) {
-                preferences.releasedSets.push(value.code);
+                releasedSets.push(value.code);
             }
         }
     });
     dataAccess.LoadCards(dataAccess, onDataAvaliable);
 };
 var onDataAvaliable = function (data) {
-    var items = [];
-    myCardCollection = new CardCollection(data.data, "released");
-    imageURLTemplate = data.imageUrlTemplate;
-    myArenaScript.start();
+    var onPrebuiltsDataAvailable = function (prebuiltsData) {
+        var allCards = data.data;
+
+        for (var prebuilt of prebuiltsData.data) {
+          for (var cardCode in prebuilt.cards) {
+            var card = allCards.find(c => c.code === cardCode);
+            card = jQuery.extend(true, {}, card); // clone the card object
+            card.pack_code = prebuilt.code;
+            card.quantity = prebuilt.cards[cardCode];
+            allCards.push(card);
+          }
+        }
+
+        myCardCollection = new CardCollection(allCards, preferences.setFilter);
+        imageURLTemplate = data.imageUrlTemplate;
+        myArenaScript.start();
+        removeCards();
+    };
+
+    dataAccess.LoadPrebuilts(dataAccess, onPrebuiltsDataAvailable);
 };
 $(document).ready(function () {
     views.deckAreaContent('home');
     views.selectType();
+    printHelpOnBlocking();
 });
+
+
+
+// Mostly custom stuff below
+
+function blockDeckOrDecklist(url) {
+    const decklistRE = new RegExp("netrunnerdb.com/[a-z]{2}/decklist/([0-9]+)");
+    const deckRE = new RegExp("netrunnerdb.com/[a-z]{2}/deck/(?:view|edit)/([0-9]+)");
+    let match;
+
+    match = decklistRE.exec(url);
+    if (match) {
+        return blockDecklist(match[1]);
+    }
+
+    match = deckRE.exec(url);
+    if (match) {
+        return blockDeck(match[1]);
+    }
+}
+
+async function fetchDecklist(id) {
+    const response = await $.getJSON(`https://netrunnerdb.com/api/2.0/public/decklist/${id}`);
+    return response.data[0];
+}
+
+async function fetchDeck(id) {
+    const response = await $.getJSON(`https://netrunnerdb.com/api/2.0/public/deck/${id}`);
+    return response.data[0];
+}
+
+async function blockDecklist(id) {
+    if (!/^[0-9]+$/.test(id)) {
+        return blockDeckOrDecklist(id);
+    }
+    const decklist = await fetchDecklist(id);
+    console.log(`Blocking ${Object.values(decklist.cards).reduce((a, b) => a + b)} cards from decklist ${decklist.name}`);
+    blockCards(decklist.cards);
+}
+
+async function blockDeck(id) {
+    if (!/^[0-9]+$/.test(id)) {
+        return blockDeckOrDecklist(id);
+    }
+    const deck = await fetchDeck(id);
+    console.log(`Blocking ${Object.values(deck.cards).reduce((a, b) => a + b)} cards from deck ${deck.name}`);
+    blockCards(deck.cards);
+}
+
+function blockCards(cards) {
+    for (const cardCode in cards) {
+        for (let i = 0; i < cards[cardCode]; i++) {
+            if (myCardCollection !== null) {
+                myCardCollection.removeCopyFromSomewhereInCollection(cardCode);
+            } else {
+                cardsToBeRemoved.push(cardCode);
+            }
+        }
+    }
+}
+
+function removeCards() {
+    for (const cardCode of cardsToBeRemoved) {
+        myCardCollection.removeCopyFromSomewhereInCollection(cardCode);
+    }
+}
+
+function printHelpOnBlocking() {
+    console.log(`Hi!
+You can now remove the cards contained within a deck or a decklist by calling
+blockDeck(id) or blockDecklist(id) respectively, where id is the numerical ID
+you can see in URLs pointing to the deck. You can also call either of the functions
+with the URL of a deck or decklist directly.
+
+For example:
+    blockDecklist("https://netrunnerdb.com/en/decklist/3106/starter-deck-corp-beginner-weyland-") works the same as blockDeckList(3106)
+and blockDeck("https://netrunnerdb.com/en/deck/view/1041890") is the same as blockDeck(1041890).
+
+Actually, you can call either function with either kind of URL, so don't worry
+too much about which one you use.
+
+Cheers!`);
+}
+
+function cardImageURL(card) {
+    if (card.image_url !== undefined) {
+        return card.image_url;
+    } else {
+        return imageURLTemplate.replace("{code}", card.code);
+    }
+}
