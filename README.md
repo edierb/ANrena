@@ -18,6 +18,6 @@ originally created by /u/gumOnShoe
           FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, 
           ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-          Purpose: ANRENA is an arena simulator which acquires its data from NetrunnerDB.com and models it's 
-          mechanics off of the hearthstone style draft.
+          Purpose: ANRENA is an Arena simulator which acquires its data from NetrunnerDB.com and models its 
+          mechanics off of the Hearthstone-style draft.
 		
